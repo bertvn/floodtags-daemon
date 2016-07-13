@@ -34,11 +34,11 @@ class Tweet(object):
 
 
 class Storage(object):
-    def __init__(self):
-        self.storage = deque([], 5000)
+    def __init__(self, maximum):
+        self.storage = deque([], maximum)
 
     def add_tweet(self, tweet):
-        # first in first out max 5k tweets
+        # first in first out max 5k tweets (maximum)
         # https://docs.python.org/3/library/collections.html#collections.deque
         self.storage.append(tweet)
 
@@ -95,15 +95,18 @@ class Cache(object):
 
 class DataHandler(object):
     def __init__(self):
-        self.storage = Storage()
+        config = configparser.ConfigParser()
+        config.read(os.path.dirname(os.path.abspath(__file__)) + "/config.ini")
+        self.storage = Storage(config["clustering"]["max"])
         self.cache = Cache()
+        self.min = config["clustering"]["min"]
         # check if there is a cached
 
     def add_tweet(self, tweet):
         self.storage.add_tweet(tweet)
 
     def start_clustering(self):
-        if len(self.storage.storage) < 5000:
+        if len(self.storage.storage) < self.min:
             return False
         self.storage.to_file()
         # cluster storage
