@@ -21,8 +21,6 @@ def main():
 def post(data):
     try:
         url = "http://localhost:8080/tweet"
-        #req = urllib.Request(url, data)
-        data["text"] = data["text"].replace("&","%26")
         f = urllib.request.urlopen(url, ("tweet=" + urllib.parse.quote(json.dumps(data))).encode("utf-8"))
         f.close()
     except urllib.error.HTTPError as e:

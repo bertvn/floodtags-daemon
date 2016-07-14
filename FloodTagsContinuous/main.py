@@ -29,7 +29,7 @@ class Tweet(object):
     def POST(self, tweet):
         # print(tweet)
         tweet = urllib.parse.unquote(tweet)
-        print(tweet)
+        #print(tweet)
         self.handler.add_tweet(json.loads(tweet))
 
 
@@ -72,11 +72,26 @@ class Cache(object):
         self.restore_cache("cache.json")
 
     def update_cache(self, new_cache):
+        temp = []
+        for cluster in new_cache:
+            for tweet in cluster["ids"]:
+                # check if tweet is already in cache
+                if any(x.id == tweet for x in self.cache):
+                    ctweet = [x for x in self.cache if x.id == tweet][0]
+                    ctweet.update(cluster["score"], cluster["id"])
+                    temp.append(ctweet)
+                else:
+                    temp.append(CachedTweet(tweet, cluster["score"], cluster["id"]))
         # for each tweet not in new cache
-        # store highest rating and cluster
+        enrich_store = ElasticHandler()
+        for tweet in self.cache:
+            if not any(x.id == tweet.id for x in temp):
+                # store highest rating and cluster
+                enrich_store.add_enrichment(tweet)
         # overwrite old cache
+        self.cache = temp
         # store cache
-        pass
+        enrich_store.flush()
 
     def store_cache(self):
         # dump cache to file
@@ -97,10 +112,9 @@ class DataHandler(object):
     def __init__(self):
         config = configparser.ConfigParser()
         config.read(os.path.dirname(os.path.abspath(__file__)) + "/config.ini")
-        self.storage = Storage(config["clustering"]["max"])
+        self.storage = Storage(int(config["clustering"]["max"]))
         self.cache = Cache()
-        self.min = config["clustering"]["min"]
-        # check if there is a cached
+        self.min = int(config["clustering"]["min"])
 
     def add_tweet(self, tweet):
         self.storage.add_tweet(tweet)
@@ -115,12 +129,14 @@ class DataHandler(object):
         return True
 
     def process_results(self):
-        # storage -> cache
+        # read file
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),'result.json'), encoding="utf8") as data_file:
+            clusters = json.load(data_file)
+        #store clusters
+        mongo = MongoHandler()
+        mongo.add_clusters(clusters)
         # process old cache and store in database
-        pass
-
-    def read_result(self):
-        pass
+        self.cache.update_cache(clusters)
 
 
 class AlgorithmHandler(object):
@@ -160,7 +176,15 @@ class MongoHandler(object):
 
 
 class ElasticHandler(object):
-    pass
+
+    def __init__(self):
+        self.enrichments = []
+
+    def add_enrichment(self, tweet):
+        self.enrichments.append(tweet)
+
+    def flush(self):
+        pass
 
 
 if __name__ == '__main__':
@@ -189,7 +213,6 @@ if __name__ == '__main__':
     # cherrypy.quickstart(App(), '/', conf)
     cherrypy.engine.start()
     # cherrypy.engine.block()
-    print("runt dit nog gewoon of is het hier al afgelopen")
 
     # every 10 minutes start clustering
     while True:
@@ -200,7 +223,9 @@ if __name__ == '__main__':
         # loop till clustering is done
         while True:
             if 'result.json' in os.listdir(os.path.dirname(os.path.abspath(__file__))):
+                print("starting processing")
                 data_handler.process_results()
                 break
             else:
+                print("zzzz")
                 time.sleep(10)
