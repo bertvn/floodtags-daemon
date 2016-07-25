@@ -5,11 +5,12 @@ import subprocess
 import time
 import urllib.parse
 from collections import deque
+from datetime import datetime
 
 import cherrypy
 from pymongo import MongoClient
 
-
+# region API
 class App(object):
     @cherrypy.expose
     def index(self):
@@ -26,13 +27,16 @@ class Tweet(object):
     def GET(self):
         return "stuff"
 
+    @cherrypy.tools.accept(media='text/plain')
     def POST(self, tweet):
-        # print(tweet)
+        print(tweet)
         tweet = urllib.parse.unquote(tweet)
-        #print(tweet)
+        # print(tweet)
         self.handler.add_tweet(json.loads(tweet))
 
+#endregion
 
+#region businesslayer
 class Storage(object):
     def __init__(self, maximum):
         self.storage = deque([], maximum)
@@ -92,6 +96,7 @@ class Cache(object):
         self.cache = temp
         # store cache
         enrich_store.flush()
+        self.store_cache()
 
     def store_cache(self):
         # dump cache to file
@@ -117,7 +122,41 @@ class DataHandler(object):
         self.min = int(config["clustering"]["min"])
 
     def add_tweet(self, tweet):
-        self.storage.add_tweet(tweet)
+        if "source" not in tweet:
+            tweet = self.format_tweet(tweet)
+        self.storage.add_tweet(self.format_tweet(tweet))
+
+    @staticmethod
+    def format_tweet(tweet):
+        result = {}
+        result["photos"] = []
+        if tweet["entities"]["media"]:
+            for media in tweet["entities"]["media"]:
+                if media["type"] == "photo":
+                    result["photos"].append(media["media_url_https"])
+        result["urls"] = []
+        if tweet["entities"]["urls"]:
+            for url in tweet["entities"]["urls"]:
+                result["urls"].append(url["url"])
+        result["waterdepth"] = -1
+        # TODO add keyword
+        result["keywords"] = ["flood"]
+        result["retweet"] = tweet["retweeted"]
+        result["classes"] = []
+        result["locations"] = []
+        # in  Thu Feb 18 12:03:44 +0000 2016
+        # out 2016-02-18T12:03:44.000Z
+        dateparts = result["created_at"].split(" ")
+        date = dateparts[5] + "-" + str('{:02d}'.format(datetime.strptime(dateparts[1],'%b').month)) + "-" + dateparts[2] + "T" + dateparts[3] + ".000Z"
+        result["date"] = date
+        result["text"] = tweet["text"]
+        result["source"] = {}
+        result["source"]["id"] = tweet["id_str"]
+        result["source"]["username"] = tweet["user"]["screen_name"]
+        result["source"]["userId"] = tweet["user"]["id_str"]
+        result["id"] = "t-" + tweet["id_str"]
+        result["labels"] = []
+        return result
 
     def start_clustering(self):
         if len(self.storage.storage) < self.min:
@@ -130,13 +169,16 @@ class DataHandler(object):
 
     def process_results(self):
         # read file
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),'result.json'), encoding="utf8") as data_file:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'result.json'),
+                  encoding="utf8") as data_file:
             clusters = json.load(data_file)
-        #store clusters
+        # store clusters
         mongo = MongoHandler()
         mongo.add_clusters(clusters)
         # process old cache and store in database
         self.cache.update_cache(clusters)
+        # remove result.json
+        os.remove(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'result.json'))
 
 
 class AlgorithmHandler(object):
@@ -157,17 +199,33 @@ class AlgorithmHandler(object):
         subprocess.Popen("python --version", stdout=subprocess.PIPE, shell=True)
         cmd = "python " + location + "main.py -in \"" + dataset + "\" -l 0 -out " + output + " -tp enrichment"
         subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
+        # remove tweets.json
+        os.remove(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tweets.json'))
 
+#endregion
 
+# region DataAccessLayer
 class MongoHandler(object):
-    # mongodb://bertvn:tracer@ds013320.mlab.com:13320/clusters
+    """
+    class for handling communications with mongodb
+    """
+
     def __init__(self):
+        """
+        constructor for MongoHandler
+        :return: None
+        """
         config = configparser.ConfigParser()
         config.read(os.path.dirname(os.path.abspath(__file__)) + "/config.ini")
         self.uri = "mongodb://" + config["mongodb"]["user"] + ":" + config["mongodb"]["password"] + "@" + \
                    config["mongodb"]["host"] + ":" + config["mongodb"]["port"] + "/" + config["mongodb"]["db"]
 
     def add_clusters(self, clusters):
+        """
+        adds clusters to mongodb specified in the config.ini file
+        :param clusters: clusters of tweets
+        :return: None
+        """
         client = MongoClient(self.uri)
         db = client.clusters
         cluster_storage = db.cluster_storage
@@ -176,7 +234,6 @@ class MongoHandler(object):
 
 
 class ElasticHandler(object):
-
     def __init__(self):
         self.enrichments = []
 
@@ -187,7 +244,11 @@ class ElasticHandler(object):
         pass
 
 
+# endregion
+
+
 if __name__ == '__main__':
+    #region serversetup
     conf = {
         '/': {
             'tools.sessions.on': True,
@@ -205,7 +266,6 @@ if __name__ == '__main__':
             'tools.encode.encoding': 'utf-8'
         }
     }
-
     cherrypy.server.socket_host = '0.0.0.0'
     data_handler = DataHandler()
     cherrypy.tree.mount(App(), '/', conf)
@@ -213,7 +273,8 @@ if __name__ == '__main__':
     # cherrypy.quickstart(App(), '/', conf)
     cherrypy.engine.start()
     # cherrypy.engine.block()
-
+    #endregion
+    #region clusterloop
     # every 10 minutes start clustering
     while True:
         time.sleep(10 * 60)
@@ -229,3 +290,6 @@ if __name__ == '__main__':
             else:
                 print("zzzz")
                 time.sleep(10)
+    #endregion
+
+
