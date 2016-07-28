@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import time
+import urllib
 import urllib.parse
 from collections import deque
 from datetime import datetime
@@ -16,6 +17,7 @@ class App(object):
     """
     filler class fills the / webpage
     """
+
     @cherrypy.expose
     def index(self):
         """
@@ -46,9 +48,6 @@ class Tweet(object):
         :param tweet: tweet that needs to be enriched
         :return: None
         """
-        print(tweet)
-        tweet = urllib.parse.unquote(tweet)
-        # print(tweet)
         self.handler.add_tweet(json.loads(tweet))
 
 
@@ -59,6 +58,7 @@ class Storage(object):
     """
     Storage class for received tweets
     """
+
     def __init__(self, maximum):
         """
         constructor for storage
@@ -94,7 +94,8 @@ class CachedTweet(object):
     cached tweet object
     used for storing recent importance value and clusters as well as the max
     """
-    def __init__(self, id, ir, cluster):
+
+    def __init__(self, id, ir, cluster, max_ir=None, max_cluster=None):
         """
         constructor for CachedTweet
         :param id: id of the tweet
@@ -103,10 +104,14 @@ class CachedTweet(object):
         :return: None
         """
         self.id = id
-        self.max_ir = ir
         self.recent_ir = ir
-        self.max_cluster = cluster
         self.recent_cluster = cluster
+        if max_ir is None:
+            self.max_ir = ir
+            self.max_cluster = cluster
+        else:
+            self.max_ir = max_ir
+            self.max_cluster = max_cluster
 
     def update(self, ir, cluster):
         """
@@ -121,11 +126,29 @@ class CachedTweet(object):
             self.max_ir = ir
             self.max_cluster = cluster
 
+    def to_json(self):
+        """
+        create json representation of the object
+        :return: json version
+        """
+        return "{\"id\" : \"" + str(self.id) + "\", \"recent_ir\" : \"" + str(
+            self.recent_ir) + "\", \"recent_cluster\" : \"" + str(self.recent_cluster) + "\", \"max_ir\" : \"" + str(
+            self.max_ir) + "\", \"max_cluster\" : \"" + str(self.max_cluster) + "\"}"
+
+    def to_final(self):
+        """
+        creates json representation of the object, with only the max values
+        :return: json version
+        """
+        return "{\"id\" : \"" + str(self.id) + "\", \"max_ir\" : \"" + str(
+            self.max_ir) + "\", \"max_cluster\" : \"" + str(self.max_cluster) + "\"}"
+
 
 class Cache(object):
     """
     cache object for storing processed tweets
     """
+
     def __init__(self):
         """
         constructor for cache
@@ -152,13 +175,15 @@ class Cache(object):
                 else:
                     temp.append(CachedTweet(tweet, cluster["score"], cluster["id"]))
         # for each tweet not in new cache
-        enrich_store = ElasticHandler()
+        enrich_store = EnrichmentHandler()
         for tweet in self.cache:
             if not any(x.id == tweet.id for x in temp):
                 # store highest rating and cluster
-                enrich_store.add_enrichment(tweet)
+                enrich_store.add_enrichment(tweet, True)
         # overwrite old cache
         self.cache = temp
+        for tweet in self.cache:
+            enrich_store.add_enrichment(tweet)
         # store cache
         enrich_store.flush()
         self.store_cache()
@@ -168,9 +193,18 @@ class Cache(object):
         dumps cache into file
         :return: None
         """
-        writer = open("cache.json", "w", encoding='utf-8')
-        writer.write(json.dump(self.cache))
-        writer.close()
+        try:
+            writer = open("cache.json", "w", encoding='utf-8')
+            storage = ["["]
+            for tweet in self.cache:
+                storage.append(tweet.to_json())
+                storage.append(",")
+            del storage[-1]
+            storage.append("]")
+            writer.write(''.join(storage))
+            writer.close()
+        except TypeError:
+            print("storage failed")
 
     def restore_cache(self, file):
         """
@@ -180,15 +214,20 @@ class Cache(object):
         """
         try:
             with open(file) as old_cache:
-                self.cache = json.loads(old_cache)
+                self.cache = json.loads(old_cache, object_hook=self.cache_decoder)
         except:
             return
+
+    @staticmethod
+    def cache_decoder(obj):
+        return CachedTweet(obj["id"], obj["recent_ir"], obj["recent_cluster"], obj["max_ir"], obj["max_cluster"])
 
 
 class DataHandler(object):
     """
     class for handling all data stored in this program
     """
+
     def __init__(self):
         """
         constructor for DataHandler
@@ -207,9 +246,9 @@ class DataHandler(object):
         :param tweet: tweet that needs to be added
         :return: None
         """
-        if "source" not in tweet:
+        if "id_str" in tweet:
             tweet = self.format_tweet(tweet)
-        self.storage.add_tweet(self.format_tweet(tweet))
+        self.storage.add_tweet(tweet)
 
     @staticmethod
     def format_tweet(tweet):
@@ -220,12 +259,12 @@ class DataHandler(object):
         """
         result = {}
         result["photos"] = []
-        if tweet["entities"]["media"]:
+        if "media" in tweet["entities"]:
             for media in tweet["entities"]["media"]:
                 if media["type"] == "photo":
                     result["photos"].append(media["media_url_https"])
         result["urls"] = []
-        if tweet["entities"]["urls"]:
+        if "urls" in tweet["entities"]:
             for url in tweet["entities"]["urls"]:
                 result["urls"].append(url["url"])
         result["waterdepth"] = -1
@@ -236,7 +275,7 @@ class DataHandler(object):
         result["locations"] = []
         # in  Thu Feb 18 12:03:44 +0000 2016
         # out 2016-02-18T12:03:44.000Z
-        dateparts = result["created_at"].split(" ")
+        dateparts = tweet["created_at"].split(" ")
         date = dateparts[5] + "-" + str('{:02d}'.format(datetime.strptime(dateparts[1], '%b').month)) + "-" + dateparts[
             2] + "T" + dateparts[3] + ".000Z"
         result["date"] = date
@@ -276,6 +315,8 @@ class DataHandler(object):
         mongo.add_clusters(clusters)
         # process old cache and store in database
         self.cache.update_cache(clusters)
+        # remove tweets.json
+        os.remove(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tweets.json'))
         # remove result.json
         os.remove(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'result.json'))
 
@@ -284,6 +325,7 @@ class AlgorithmHandler(object):
     """
     class for starting the algorithm
     """
+
     def start_algorithm(self):
         """
         starts the algorithm
@@ -301,8 +343,6 @@ class AlgorithmHandler(object):
         subprocess.Popen("python --version", stdout=subprocess.PIPE, shell=True)
         cmd = "python " + location + "main.py -in \"" + dataset + "\" -l 0 -out " + output + " -tp enrichment"
         subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
-        # remove tweets.json
-        os.remove(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tweets.json'))
 
 
 # endregion
@@ -320,8 +360,13 @@ class MongoHandler(object):
         """
         config = configparser.ConfigParser()
         config.read(os.path.dirname(os.path.abspath(__file__)) + "/config.ini")
-        self.uri = "mongodb://" + config["mongodb"]["user"] + ":" + config["mongodb"]["password"] + "@" + \
-                   config["mongodb"]["host"] + ":" + config["mongodb"]["port"] + "/" + config["mongodb"]["db"]
+        self.uri = ""
+        if int(config["mongodb"]["use_credentials"]) == 1:
+            self.uri = "mongodb://" + config["mongodb"]["user"] + ":" + config["mongodb"]["password"] + "@" + \
+                       config["mongodb"]["host"] + ":" + config["mongodb"]["port"] + "/" + config["mongodb"]["db"]
+        else:
+            self.uri = "mongodb://" + config["mongodb"]["host"] + ":" + config["mongodb"]["port"] + "/" + \
+                       config["mongodb"]["db"]
 
     def add_clusters(self, clusters):
         """
@@ -336,39 +381,72 @@ class MongoHandler(object):
         client.close()
 
 
-class ElasticHandler(object):
+class EnrichmentHandler(object):
     """
     class for handling communication with the enrichment updater
     """
+
     def __init__(self):
         """
         constructor for ElasticHandler
         :return: None
         """
         self.enrichments = []
+        config = configparser.ConfigParser()
+        config.read(os.path.dirname(os.path.abspath(__file__)) + "/config.ini")
+        self.url = "http://" + config["enrichment"]["host"] + ":" + config["enrichment"]["port"] + "/" + \
+                   config["enrichment"]["path"]
 
-    def add_enrichment(self, tweet):
+    def add_enrichment(self, tweet, final=False):
         """
         add enrichment that needs to be processed
         :param tweet: enrichment
+        :param final: should only max be pushed
         :return: None
         """
-        self.enrichments.append(tweet)
+        if final:
+            enrichment = tweet.to_final()
+        else:
+            enrichment = tweet.to_json()
+        self.enrichments.append(enrichment)
 
     def flush(self):
         """
         send enrichments to the enrichment updater
         :return:
         """
-        # TODO implement the connection
-        pass
+        for enrichment in self.enrichments:
+            self.post(enrichment)
+
+    def post(self, data):
+        """
+        post data to server
+        :param data: data that needs to be send
+        :return: None
+        """
+        try:
+            f = urllib.request.urlopen(self.url, ("enrichment=" + urllib.parse.quote(data)).encode("utf-8"))
+            f.close()
+        except urllib.error.HTTPError as e:
+            print(str("enrichment=" + data))
 
 
 # endregion
 
+def fill_data():
+    result = []
+    counter = 550
+    while len(result) < 500:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               '../tests/TweetTest/dummydata/data' + str(counter) + '.json'),
+                  encoding="utf8") as data_file:
+            result += json.load(data_file)
+        counter -= 1
 
-if __name__ == '__main__':
-    # region serversetup
+    return result
+
+
+def main():
     conf = {
         '/': {
             'tools.sessions.on': True,
@@ -388,13 +466,19 @@ if __name__ == '__main__':
     }
     cherrypy.server.socket_host = '0.0.0.0'
     data_handler = DataHandler()
+    # add web apps that need to be run
     cherrypy.tree.mount(App(), '/', conf)
     cherrypy.tree.mount(Tweet(data_handler), '/tweet', newconf)
-    # cherrypy.quickstart(App(), '/', conf)
+
     cherrypy.engine.start()
     # cherrypy.engine.block()
-    # endregion
-    # region clusterloop
+
+    """ test to see how it react when filled
+    tweets = fill_data()
+    for tweet in tweets:
+        data_handler.add_tweet(tweet)
+    """
+
     # every 10 minutes start clustering
     while True:
         time.sleep(10 * 60)
@@ -404,10 +488,11 @@ if __name__ == '__main__':
         # loop till clustering is done
         while True:
             if 'result.json' in os.listdir(os.path.dirname(os.path.abspath(__file__))):
-                print("starting processing")
                 data_handler.process_results()
                 break
             else:
-                print("zzzz")
                 time.sleep(10)
-                # endregion
+
+
+if __name__ == '__main__':
+    main()
