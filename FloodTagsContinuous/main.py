@@ -48,7 +48,6 @@ class Tweet(object):
         :param tweet: tweet that needs to be enriched
         :return: None
         """
-        print(tweet)
         self.handler.add_tweet(json.loads(tweet))
 
 
