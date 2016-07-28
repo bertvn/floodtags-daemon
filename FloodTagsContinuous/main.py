@@ -48,6 +48,7 @@ class Tweet(object):
         :param tweet: tweet that needs to be enriched
         :return: None
         """
+        print(tweet)
         self.handler.add_tweet(json.loads(tweet))
 
 
@@ -269,8 +270,8 @@ class DataHandler(object):
                 result["urls"].append(url["url"])
         result["waterdepth"] = -1
         # TODO add keyword
-        result["keywords"] = ["flood"]
-        result["retweet"] = tweet["retweeted"]
+        result["keywords"] = tweet["dependencies"]["keywords"]
+        result["retweet"] = tweet["dependencies"]["retweet"]
         result["classes"] = []
         result["locations"] = []
         # in  Thu Feb 18 12:03:44 +0000 2016
