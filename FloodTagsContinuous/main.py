@@ -82,7 +82,7 @@ class Storage(object):
         dump storage into a json file
         :return: None
         """
-        writer = open("tweets.json", "w", encoding="utf-8")
+        writer = open(os.path.join(os.path.dirname(os.path.abspath(__file__)) + r"/tweets.json"), "w", encoding="utf-8")
         writer.write("{\"tags\" : ")
         writer.write(json.dumps(list(self.storage)))
         writer.write("}")
@@ -156,7 +156,7 @@ class Cache(object):
         :return: None
         """
         self.cache = []
-        self.restore_cache("cache.json")
+        self.restore_cache(os.path.join(os.path.dirname(os.path.abspath(__file__)) + r"/cache.json"))
 
     def update_cache(self, new_cache):
         """
@@ -194,7 +194,7 @@ class Cache(object):
         :return: None
         """
         try:
-            writer = open("cache.json", "w", encoding='utf-8')
+            writer = open(os.path.join(os.path.dirname(os.path.abspath(__file__)) + r"/cache.json"), "w", encoding='utf-8')
             storage = ["["]
             for tweet in self.cache:
                 storage.append(tweet.to_json())
